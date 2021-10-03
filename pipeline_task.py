@@ -17,6 +17,7 @@ class MyOptions(PipelineOptions):
                             default='./output/')
 
 
+# Parses items from csv into a python dictionary
 class ParseCSV(beam.DoFn):
     def process(self, element):
         (element_unique_identifier,
@@ -56,22 +57,28 @@ class ParseCSV(beam.DoFn):
         }]
 
 
+# Takes location fields of the transaction and hashes them into a unique property id
+# then adds it to the dictionary
 class AssignUPID(beam.DoFn):
     def generate_upid(self, element):
+        # Collect property location fields
         uid_fields = [element['Postcode'], element['PAON'], element['SAON'], element['Street'], element['Locality'],
                       element['Town / City'], element['District'], element['County']]
 
+        # Join fields together, clean up and hash
         unique_property_string = ''.join(uid_fields)
         unique_property_string = ''.join(e for e in unique_property_string if e.isalnum()).lower()
         upid = int(hashlib.sha1(unique_property_string.encode('utf-8')).hexdigest(), 16)
         return upid
 
     def process(self, element):
+        # Append the upid to the transaction
         upid = self.generate_upid(element)
         element['Unique Property ID'] = upid
         return [element]
 
-
+# Extract the upid and transaction into tuple as key, value pair to allow
+# for grouping all transactions to their property
 class CollectUPID(beam.DoFn):
     def process(self, element):
         upid = element['Unique Property ID']
@@ -79,6 +86,7 @@ class CollectUPID(beam.DoFn):
         return [(upid, element)]
 
 
+# Convert the python dictionary into a ndjson string suitable for writing
 class ConvertToNDJSON(beam.DoFn):
     def process(self, element):
         key, val = element
@@ -87,6 +95,8 @@ class ConvertToNDJSON(beam.DoFn):
 
 
 if __name__ == '__main__':
+
+    # Modify these
     input_filename = "./data/sample_200K.csv"
     output_filename = "./output/result_200k.ndjson"
 
@@ -95,17 +105,17 @@ if __name__ == '__main__':
     start = time.time()
     with beam.Pipeline(options=options) as p:
         transactions = (p
-                        | beam.io.ReadFromText(input_filename)
-                        | beam.ParDo(ParseCSV())
-                        | beam.ParDo(AssignUPID()))
+                        | "Read CSV" >> beam.io.ReadFromText(input_filename)
+                        | "Convert CSV to Python Dict" >> beam.ParDo(ParseCSV())
+                        | "Assign transactions' property a unique id" >> beam.ParDo(AssignUPID()))
 
         property_transactions = (transactions
-                                 | beam.ParDo(CollectUPID())
-                                 | beam.GroupByKey())
+                                 | "Convert transaction into upid key, value pair" >> beam.ParDo(CollectUPID())
+                                 | "Group transactions by their property" >> beam.GroupByKey())
 
         output = (property_transactions
-                  | beam.ParDo(ConvertToNDJSON())
-                  | beam.io.WriteToText(output_filename))
+                  | "Convert dictionary to ndjson" >> beam.ParDo(ConvertToNDJSON())
+                  | "Write ndjson to file" >> beam.io.WriteToText(output_filename))
     end = time.time()
     print('Time Taken', end-start)
 
